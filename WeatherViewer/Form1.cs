@@ -1,18 +1,17 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Data;
 using System.Drawing;
 using System.IO;
-using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.Xml;
 
 namespace WeatherViewer
 {
     public partial class Form1 : Form
     {
         static string baseUrl = "http://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtFcst";
-        string authKey;
+        private string authKey;
+        private string authKeyPath = @"data\authKey.txt";
         private LoadingHandler overlay;
         private IconHandler iconHandler;
 
@@ -21,39 +20,51 @@ namespace WeatherViewer
             InitializeComponent();
         }
 
+        private async Task checkAPI(Action<bool> callback)
+        {
+            authKey = File.ReadAllText(authKeyPath);
+
+            string jsonData = await ApiHandler.GetApiDataAsync(ApiHandler.generateURL(baseUrl, authKey));
+            var items = DataHandler.ParseJson(jsonData);
+            //var firstItem = items?.FirstOrDefault();
+
+            if (items == null || items.Count == 0)
+            {
+                authKeyLabel.Text = "False";
+                authKeyLabel.ForeColor = Color.Red;
+                callback(false);
+            }
+            else callback(true);
+        }
+
         private async void Form1_Load(object sender, EventArgs e)
         {
-            string authKeyPath = @"data\authKey.txt";
+            // API 데이터를 불러오는 동안 로딩 상태를 표시
+            authKeyLabel.Text = "API Loading...";
+            authKeyLabel.ForeColor = Color.Orange;
+            //반투명 윈도우 표시
+            ShowOverlay();
+
             try
             {
-                //반투명 윈도우 표시
-                ShowOverlay();
-
-                //최초 로드 시 authKeyPath에서 키를 검사하고 없으면, 키를 요청하는 창 호출
-                //bin\Debug\data\authKey.txt;
-                authKey = File.ReadAllText(authKeyPath);
-
-                // API 데이터를 불러오는 동안 로딩 상태를 표시
-                authKeyLabel.Text = "API Loading...";
-                authKeyLabel.ForeColor = Color.Orange;
-
-                string jsonData = await ApiHandler.GetApiDataAsync(ApiHandler.generateURL(baseUrl, authKey));
-                var items = DataHandler.ParseJson(jsonData);
-                var firstItem = items?.FirstOrDefault();
-
-                // 데이터가 없으면 False 상태 표시 및 Form2 호출
-                if (items == null || items.Count == 0)
+                await checkAPI(result =>
                 {
-                    authKeyLabel.Text = "False";
-                    authKeyLabel.ForeColor = Color.Red;
-                    Form2 newForm = new Form2();
-                    newForm.Show();
-                }
-                else
-                {
-                    authKeyLabel.Text = "True";
-                    authKeyLabel.ForeColor = Color.Blue;
-                }
+                    if (result == true)
+                    {
+                        authKeyLabel.Text = "True";
+                        authKeyLabel.ForeColor = Color.Blue;
+                    }
+                    else
+                    {
+                        authKeyLabel.Text = "False";
+                        authKeyLabel.ForeColor = Color.Red;
+                        Form2 newForm = new Form2();
+                        Thread.Sleep(1000);
+                        newForm.Show();
+                        if (newForm.DialogResult == DialogResult.OK)
+                            authKey = File.ReadAllText(authKeyPath);
+                    }
+                });
 
             }
             catch
@@ -61,10 +72,13 @@ namespace WeatherViewer
                 authKeyLabel.Text = "False";
                 authKeyLabel.ForeColor = Color.Red;
                 Form2 newForm = new Form2();
-                newForm.Show();
+                newForm.ShowDialog();
+                if (newForm.DialogResult == DialogResult.OK)
+                    authKey = File.ReadAllText(authKeyPath);
             }
             finally
             {
+                button1_Click(sender, e);
                 HideOverlay();
             }
         }
@@ -102,9 +116,17 @@ namespace WeatherViewer
                 string PrecType = foreCastData.PrecipitationType[i];
                 tempLabels[i].Text = foreCastData.Temperature[i] + " ℃";
                 humiLabels[i].Text = foreCastData.Humidity[i] + " %";
-                precLabels[i].Text = foreCastData.Precipitation[i] + " mm";
+                precLabels[i].Text = foreCastData.Precipitation[i];
                 windDirLabels[i].Text = (foreCastData.WindDirection[i]).PadLeft(3, '0') + "°";
                 windSpdLabels[i].Text = foreCastData.WindSpeed[i] + "m/s";
+
+                //pictureBox에 로드된 이미지가 이미 있는 경우, 해당 pictureBox를 초기화해 최적화
+                //->메모리 사전누수 방지
+                if (pictureBoxes[i].Image != null)
+                {
+                    pictureBoxes[i].Image.Dispose();
+                    pictureBoxes[i].Image = null;
+                }
 
                 //아래는 그림배치
                 if (PrecType == "0") iconHandler.SkyCodeToIcon(pictureBoxes, foreCastData.Sky[i], i);
@@ -121,11 +143,14 @@ namespace WeatherViewer
         // 반투명 윈도우 표시
         private void ShowOverlay()
         {
-            overlay = new LoadingHandler
+            if (overlay == null || overlay.IsDisposed)
             {
-                Owner = this, // Form1을 소유자로 설정
-                Bounds = this.Bounds // Form1 크기와 위치를 따라감
-            };
+                overlay = new LoadingHandler(this);
+
+                overlay.Owner = this;
+
+                overlay.StartPosition = FormStartPosition.Manual;
+            }
 
             overlay.Show();
         }
